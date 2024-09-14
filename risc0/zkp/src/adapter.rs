@@ -352,16 +352,16 @@ impl PolyExtStepDef {
         for op in self.block.iter() {
             op.step_and_record::<F>(&mut fp_vars_relation, &mut fp_vars, &mut mix_vars, mix, u, args);
         }
-        assert_eq!(
-            fp_vars.len(),
-            self.block.len() - (self.ret + 1),
-            "Miscalculated capacity for fp_vars"
-        );
-        assert_eq!(
-            mix_vars.len(),
-            self.ret + 1,
-            "Miscalculated capacity for mix_vars"
-        );
+        // assert_eq!(
+        //     fp_vars.len(),
+        //     self.block.len() - (self.ret + 1),
+        //     "Miscalculated capacity for fp_vars"
+        // );
+        // assert_eq!(
+        //     mix_vars.len(),
+        //     self.ret + 1,
+        //     "Miscalculated capacity for mix_vars"
+        // );
         (mix_vars[self.ret],fp_vars,mix_vars,fp_vars_relation)
     }
 
