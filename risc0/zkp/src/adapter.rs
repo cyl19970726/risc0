@@ -16,7 +16,7 @@
 
 use alloc::{str::from_utf8, vec::Vec};
 use core::fmt;
-
+use alloc::collections::BTreeMap;
 use anyhow::Result;
 use risc0_core::field::{Elem, ExtElem, Field};
 use serde::{Deserialize, Serialize};
@@ -185,7 +185,7 @@ pub struct PolyExtStepDef {
     pub block: &'static [PolyExtStep],
     pub ret: Var,
 }
-
+#[derive(Clone, Debug, Copy)]
 pub enum PolyExtStep {
     Const(u32),
     Get(usize),
@@ -252,6 +252,67 @@ impl PolyExtStep {
             }
         }
     }
+
+    pub fn step_and_record<F: Field>(
+        &self,
+        fp_vars_relation: &mut BTreeMap<Var,PolyExtStep>,
+        fp_vars: &mut Vec<F::ExtElem>,
+        mix_vars: &mut Vec<MixState<F::ExtElem>>,
+        mix: &F::ExtElem,
+        u: &[F::ExtElem],
+        args: &[&[F::Elem]],
+    ) {
+        match self {
+            PolyExtStep::Const(value) => {
+                let elem = F::Elem::from_u64(*value as u64);
+                fp_vars.push(F::ExtElem::from_subfield(&elem));
+                fp_vars_relation.insert(fp_vars.len()-1, self.clone());
+            }
+            PolyExtStep::Get(tap) => {
+                fp_vars.push(u[*tap]);
+                fp_vars_relation.insert(fp_vars.len()-1, self.clone());
+            }
+            PolyExtStep::GetGlobal(base, offset) => {
+                fp_vars.push(F::ExtElem::from_subfield(&args[*base][*offset]));
+                fp_vars_relation.insert(fp_vars.len()-1, self.clone());
+            }
+            PolyExtStep::Add(x1, x2) => {
+                fp_vars.push(fp_vars[*x1] + fp_vars[*x2]);
+                fp_vars_relation.insert(fp_vars.len()-1, self.clone());
+            }
+            PolyExtStep::Sub(x1, x2) => {
+                fp_vars.push(fp_vars[*x1] - fp_vars[*x2]);
+                fp_vars_relation.insert(fp_vars.len()-1, self.clone());
+            }
+            PolyExtStep::Mul(x1, x2) => {
+                fp_vars.push(fp_vars[*x1] * fp_vars[*x2]);
+                fp_vars_relation.insert(fp_vars.len()-1, self.clone());
+            }
+            PolyExtStep::True => {
+                mix_vars.push(MixState {
+                    tot: F::ExtElem::ZERO,
+                    mul: F::ExtElem::ONE,
+                });
+            }
+            PolyExtStep::AndEqz(x, val) => {
+                let x = mix_vars[*x];
+                let val = fp_vars[*val];
+                mix_vars.push(MixState {
+                    tot: x.tot + x.mul * val,
+                    mul: x.mul * *mix,
+                });
+            }
+            PolyExtStep::AndCond(x, cond, inner) => {
+                let x = mix_vars[*x];
+                let cond = fp_vars[*cond];
+                let inner = mix_vars[*inner];
+                mix_vars.push(MixState {
+                    tot: x.tot + cond * inner.tot * x.mul,
+                    mul: x.mul * inner.mul,
+                });
+            }
+        }
+    }
 }
 
 impl PolyExtStepDef {
@@ -278,4 +339,30 @@ impl PolyExtStepDef {
         );
         mix_vars[self.ret]
     }
+
+    pub fn step_and_record<F: Field>(
+        &self,
+        mix: &F::ExtElem,
+        u: &[F::ExtElem],
+        args: &[&[F::Elem]],
+    ) -> MixState<F::ExtElem> {
+        let mut fp_vars = Vec::with_capacity(self.block.len() - (self.ret + 1));
+        let mut mix_vars = Vec::with_capacity(self.ret + 1);
+        let mut fp_vars_relation = BTreeMap::new();
+        for op in self.block.iter() {
+            op.step_and_record::<F>(&mut fp_vars_relation, &mut fp_vars, &mut mix_vars, mix, u, args);
+        }
+        assert_eq!(
+            fp_vars.len(),
+            self.block.len() - (self.ret + 1),
+            "Miscalculated capacity for fp_vars"
+        );
+        assert_eq!(
+            mix_vars.len(),
+            self.ret + 1,
+            "Miscalculated capacity for mix_vars"
+        );
+        mix_vars[self.ret]
+    }
+
 }
