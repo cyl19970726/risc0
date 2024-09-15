@@ -345,7 +345,7 @@ impl PolyExtStepDef {
         mix: &F::ExtElem,
         u: &[F::ExtElem],
         args: &[&[F::Elem]],
-    ) -> (MixState<F::ExtElem>,Vec<<F as Field>::ExtElem>,Vec<MixState<<F as Field>::ExtElem>>, BTreeMap<usize,PolyExtStep>) {
+    ) -> (Vec<<F as Field>::ExtElem>,Vec<MixState<<F as Field>::ExtElem>>, BTreeMap<usize,PolyExtStep>) {
         let mut fp_vars: Vec<<F as Field>::ExtElem> = Vec::with_capacity(self.block.len() - (self.ret + 1));
         let mut mix_vars: Vec<MixState<<F as Field>::ExtElem>> = Vec::with_capacity(self.ret + 1);
         let mut fp_vars_relation = BTreeMap::new();
@@ -362,7 +362,7 @@ impl PolyExtStepDef {
         //     self.ret + 1,
         //     "Miscalculated capacity for mix_vars"
         // );
-        (mix_vars[self.ret],fp_vars,mix_vars,fp_vars_relation)
+        (fp_vars,mix_vars,fp_vars_relation)
     }
 
 }
