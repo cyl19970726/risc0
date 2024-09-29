@@ -300,7 +300,7 @@ impl PolyExtStep {
                     tot: F::ExtElem::ZERO,
                     mul: F::ExtElem::ONE,
                 });
-                mix_var_index_to_polystep.insert(fp_vars.len() - 1, self.clone());
+                mix_var_index_to_polystep.insert(mix_vars.len() - 1, self.clone());
             }
             PolyExtStep::AndEqz(x, val) => {
                 let x = mix_vars[*x];
@@ -309,7 +309,7 @@ impl PolyExtStep {
                     tot: x.tot + x.mul * val,
                     mul: x.mul * *mix,
                 });
-                mix_var_index_to_polystep.insert(fp_vars.len() - 1, self.clone());
+                mix_var_index_to_polystep.insert(mix_vars.len() - 1, self.clone());
             }
             PolyExtStep::AndCond(x, cond, inner) => {
                 let x = mix_vars[*x];
@@ -319,7 +319,7 @@ impl PolyExtStep {
                     tot: x.tot + cond * inner.tot * x.mul,
                     mul: x.mul * inner.mul,
                 });
-                mix_var_index_to_polystep.insert(fp_vars.len() - 1, self.clone());
+                mix_var_index_to_polystep.insert(mix_vars.len() - 1, self.clone());
             }
         }
     }
