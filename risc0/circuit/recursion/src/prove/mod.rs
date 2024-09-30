@@ -38,7 +38,6 @@ use crate::{
 use anyhow::{bail, Ok, Result};
 use rand::thread_rng;
 use risc0_core::scope;
-use risc0_zkp::hal::Buffer;
 use risc0_zkp::{
     adapter::{CircuitInfo, CircuitStepContext, TapsProvider, PROOF_SYSTEM_INFO},
     core::{digest::Digest, hash::poseidon2::Poseidon2HashSuite},
@@ -50,6 +49,7 @@ use risc0_zkp::{
     prove::adapter::ProveAdapter,
     ZK_CYCLES,
 };
+use risc0_zkp::{hal::Buffer, taps::TapSet};
 use serde::{Deserialize, Serialize};
 use zip::unstable::LittleEndianWriteExt;
 
@@ -395,6 +395,7 @@ impl Prover {
                     ctrl.to_vec().as_slice(),
                     data.to_vec().as_slice(),
                     rows,
+                    CIRCUIT.get_taps(),
                 )?;
 
                 // write p3_trace_matrix to trace_matrix.bin file
@@ -452,6 +453,7 @@ pub fn trace_to_p3_matrix_u32(
     ctrl_trace: &[BabyBearElem],
     data_trace: &[BabyBearElem],
     rows_size: usize,
+    tapset: &'static TapSet<'static>,
 ) -> Result<Vec<u32>> {
     //column major trace
     let accum_matrix: Vec<Vec<BabyBearElem>> = accum_trace
@@ -473,7 +475,7 @@ pub fn trace_to_p3_matrix_u32(
     let mut accum_matrix_with_back_col = vec![];
 
     //copy back col
-    for tap in CIRCUIT.get_taps().taps {
+    for tap in tapset.taps {
         let shift = tap.back as usize;
         if tap.group == REGISTER_GROUP_ACCUM {
             let prev = accum_matrix[tap.offset as usize].clone();
@@ -514,9 +516,9 @@ pub fn trace_to_p3_matrix_u32(
     }
 
     //sanity check for recursion taps
-    assert_eq!(accum_matrix_with_back_col.len(), 16);
-    assert_eq!(ctrl_matrix_with_back_col.len(), 23);
-    assert_eq!(data_matrix_with_back_col.len(), 604);
+    // assert_eq!(accum_matrix_with_back_col.len(), 16);
+    // assert_eq!(ctrl_matrix_with_back_col.len(), 23);
+    // assert_eq!(data_matrix_with_back_col.len(), 604);
 
     // Concatenate ctrl, data, and accum into a single row-major vector
     let ctrl_columns = ctrl_matrix_with_back_col.len();
@@ -542,10 +544,7 @@ pub fn trace_to_p3_matrix_u32(
     Ok(p3_trace_matrix)
 }
 
-pub fn write_file (
-    content: &[u32],
-    file_name: &str,
-) -> Result<()>{
+pub fn write_file(content: &[u32], file_name: &str) -> Result<()> {
     let mut file = File::create(file_name)?;
 
     for elem in content.iter() {
@@ -555,9 +554,7 @@ pub fn write_file (
     Ok(())
 }
 
-pub fn read_file (
-    file_name: &str,
-) -> Result<Vec<u32>>{
+pub fn read_file(file_name: &str) -> Result<Vec<u32>> {
     let file = File::open(file_name)?;
     let mut reader = BufReader::new(file);
     let mut buffer = Vec::new();
@@ -567,4 +564,160 @@ pub fn read_file (
         buffer.push(num);
     }
     Ok(buffer)
+}
+
+#[cfg(test)]
+mod tests {
+    use risc0_zkp::field::baby_bear::BabyBearElem;
+    use risc0_zkp::taps::{TapData, TapSet};
+
+    use crate::prove::trace_to_p3_matrix_u32;
+
+    #[test]
+    fn test_trace_to_p3_matrix() {
+        //accum matrix  ctrl matrix  data matrix
+        //[2,3]          [1,2,3]      [1,4,5]
+        //[7,8]          [1,3,1]      [3,2,1]
+
+        //tapset
+        //ctrl column 1 back 1
+        //data column 2 back 1
+        //accum column 0 back 1
+
+        //expected result
+        //accum matrix ctrl matrix  data matrix
+        //[2,7,3]      [1,2,3,3]      [1,4,5,1]
+        //[7,2,8]      [1,3,2,1]      [3,2,1,5]
+
+        //[2,7,3,1,2,3,3,1,4,5,1, 7,2,8,1,3,2,1,3,2,1,5]
+        let ctrl_trace = vec![
+            BabyBearElem::from(1 as u32),
+            BabyBearElem::from(1 as u32),
+            BabyBearElem::from(2 as u32),
+            BabyBearElem::from(3 as u32),
+            BabyBearElem::from(3 as u32),
+            BabyBearElem::from(1 as u32),
+        ];
+        let data_trace = vec![
+            BabyBearElem::from(1 as u32),
+            BabyBearElem::from(3 as u32),
+            BabyBearElem::from(4 as u32),
+            BabyBearElem::from(2 as u32),
+            BabyBearElem::from(5 as u32),
+            BabyBearElem::from(1 as u32),
+        ];
+        let accum_trace = vec![
+            BabyBearElem::from(2 as u32),
+            BabyBearElem::from(7 as u32),
+            BabyBearElem::from(3 as u32),
+            BabyBearElem::from(8 as u32),
+        ];
+
+        pub const TAPSET: &TapSet = &TapSet::<'static> {
+            taps: &[
+                TapData {
+                    offset: 0,
+                    back: 0,
+                    group: 0,
+                    combo: 1,
+                    skip: 2,
+                },
+                TapData {
+                    offset: 0,
+                    back: 1,
+                    group: 0,
+                    combo: 1,
+                    skip: 2,
+                },
+                TapData {
+                    offset: 1,
+                    back: 0,
+                    group: 0,
+                    combo: 1,
+                    skip: 1,
+                },
+                TapData {
+                    offset: 0,
+                    back: 0,
+                    group: 1,
+                    combo: 1,
+                    skip: 1,
+                },
+                TapData {
+                    offset: 1,
+                    back: 0,
+                    group: 1,
+                    combo: 1,
+                    skip: 2,
+                },
+                TapData {
+                    offset: 1,
+                    back: 1,
+                    group: 1,
+                    combo: 1,
+                    skip: 2,
+                },
+                TapData {
+                    offset: 2,
+                    back: 0,
+                    group: 1,
+                    combo: 1,
+                    skip: 1,
+                },
+                TapData {
+                    offset: 0,
+                    back: 0,
+                    group: 2,
+                    combo: 1,
+                    skip: 1,
+                },
+                TapData {
+                    offset: 1,
+                    back: 0,
+                    group: 2,
+                    combo: 1,
+                    skip: 1,
+                },
+                TapData {
+                    offset: 2,
+                    back: 0,
+                    group: 2,
+                    combo: 1,
+                    skip: 2,
+                },
+                TapData {
+                    offset: 2,
+                    back: 1,
+                    group: 2,
+                    combo: 1,
+                    skip: 2,
+                },
+            ],
+            combo_taps: &[
+                0, 0, 1, 0, 1, 2, 3, 4, 68, 0, 1, 2, 7, 15, 16, 0, 2, 7, 15, 16,
+            ],
+            combo_begin: &[0, 1, 3, 9, 15, 20],
+            group_begin: &[0, 16, 39, 643],
+            combos_count: 5,
+            reg_count: 8,
+            tot_combo_backs: 20,
+            // TODO: Generate these instead of hardcoding:
+            group_names: &["accum", "code", "data"],
+        };
+        let matrix = trace_to_p3_matrix_u32(
+            accum_trace.as_slice(),
+            ctrl_trace.as_slice(),
+            data_trace.as_slice(),
+            2,
+            TAPSET,
+        )
+        .unwrap();
+        let expected: Vec<u32> = vec![
+            2, 7, 3, 1, 2, 3, 3, 1, 4, 5, 1, 7, 2, 8, 1, 3, 2, 1, 3, 2, 1, 5,
+        ];
+        println!("matrix:{:?}", matrix);
+        for i in 0..matrix.len() {
+            assert_eq!(matrix[i], expected[i]);
+        }
+    }
 }
