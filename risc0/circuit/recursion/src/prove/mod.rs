@@ -22,15 +22,23 @@ mod preflight;
 mod program;
 pub mod zkr;
 
-use std::{collections::VecDeque, fmt::Debug, mem::take, rc::Rc};
+use std::{
+    collections::VecDeque,
+    fmt::Debug,
+    fs::File,
+    io::{BufReader, Read},
+    mem::take,
+    rc::Rc,
+};
 
 use crate::{
     cpu::CpuCircuitHal, CircuitImpl, CIRCUIT, REGISTER_GROUP_ACCUM, REGISTER_GROUP_CTRL,
     REGISTER_GROUP_DATA,
 };
-use anyhow::{bail, Result};
+use anyhow::{bail, Ok, Result};
 use rand::thread_rng;
 use risc0_core::scope;
+use risc0_zkp::hal::Buffer;
 use risc0_zkp::{
     adapter::{CircuitInfo, CircuitStepContext, TapsProvider, PROOF_SYSTEM_INFO},
     core::{digest::Digest, hash::poseidon2::Poseidon2HashSuite},
@@ -43,6 +51,7 @@ use risc0_zkp::{
     ZK_CYCLES,
 };
 use serde::{Deserialize, Serialize};
+use zip::unstable::LittleEndianWriteExt;
 
 use self::exec::RecursionExecutor;
 pub use self::program::Program;
@@ -378,6 +387,25 @@ impl Prover {
 
                 prover.commit_group(REGISTER_GROUP_ACCUM, &accum);
 
+                let rows = 1 << (adapter.po2() as usize);
+
+                // accum, ctrl, data trace table to p3 RowMajorMatrix
+                let p3_trace_matrix = trace_to_p3_matrix_u32(
+                    accum.to_vec().as_slice(),
+                    ctrl.to_vec().as_slice(),
+                    data.to_vec().as_slice(),
+                    rows,
+                )?;
+
+                // write p3_trace_matrix to trace_matrix.bin file
+                let _ = write_file(&p3_trace_matrix, "trace_matrix.bin")?;
+
+                // read from trace_matrix.bin file for sanity check
+                let read_buffer = read_file("trace_matrix.bin")?;
+                for i in 0..p3_trace_matrix.len() {
+                    assert_eq!(p3_trace_matrix[i], read_buffer[i]);
+                }
+
                 (mix, io)
             });
 
@@ -417,4 +445,126 @@ impl Prover {
         (machine.iop_reads, machine.byte_reads) = (preflight.iop_reads, preflight.byte_reads);
         Ok(machine)
     }
+}
+
+pub fn trace_to_p3_matrix_u32(
+    accum_trace: &[BabyBearElem],
+    ctrl_trace: &[BabyBearElem],
+    data_trace: &[BabyBearElem],
+    rows_size: usize,
+) -> Result<Vec<u32>> {
+    //column major trace
+    let accum_matrix: Vec<Vec<BabyBearElem>> = accum_trace
+        .chunks(rows_size)
+        .map(|chunk| chunk.to_vec())
+        .collect();
+    let ctrl_matrix: Vec<Vec<BabyBearElem>> = ctrl_trace
+        .chunks(rows_size)
+        .map(|chunk| chunk.to_vec())
+        .collect();
+    let data_matrix: Vec<Vec<BabyBearElem>> = data_trace
+        .chunks(rows_size)
+        .map(|chunk| chunk.to_vec())
+        .collect();
+
+    //init matrix_with_back_col
+    let mut ctrl_matrix_with_back_col = vec![];
+    let mut data_matrix_with_back_col = vec![];
+    let mut accum_matrix_with_back_col = vec![];
+
+    //copy back col
+    for tap in CIRCUIT.get_taps().taps {
+        let shift = tap.back as usize;
+        if tap.group == REGISTER_GROUP_ACCUM {
+            let prev = accum_matrix[tap.offset as usize].clone();
+            if shift == 0 {
+                accum_matrix_with_back_col.push(prev);
+            } else {
+                let mut rotated = vec![BabyBearElem::ZERO; rows_size];
+                rotated[shift..].copy_from_slice(&prev[0..(rows_size - shift)]);
+                rotated[..shift].copy_from_slice(&prev[(rows_size - shift)..]);
+                accum_matrix_with_back_col.push(rotated);
+                //println!("copy group:{:?}, reg:{:?}, back:{:?}", REGISTER_GROUP_ACCUM, tap.offset, tap.back);
+            };
+        } else if tap.group == REGISTER_GROUP_CTRL {
+            let prev = ctrl_matrix[tap.offset as usize].clone();
+            if shift == 0 {
+                ctrl_matrix_with_back_col.push(prev);
+            } else {
+                let mut rotated = vec![BabyBearElem::ZERO; rows_size];
+                rotated[shift..].copy_from_slice(&prev[0..(rows_size - shift)]);
+                rotated[..shift].copy_from_slice(&prev[(rows_size - shift)..]);
+                ctrl_matrix_with_back_col.push(rotated);
+                //println!("copy group:{:?}, reg:{:?}, back:{:?}", REGISTER_GROUP_CTRL, tap.offset, tap.back);
+            };
+        } else if tap.group == REGISTER_GROUP_DATA {
+            let prev = data_matrix[tap.offset as usize].clone();
+            if shift == 0 {
+                data_matrix_with_back_col.push(prev);
+            } else {
+                let mut rotated = vec![BabyBearElem::ZERO; rows_size];
+                rotated[shift..].copy_from_slice(&prev[0..(rows_size - shift)]);
+                rotated[..shift].copy_from_slice(&prev[(rows_size - shift)..]);
+                data_matrix_with_back_col.push(rotated);
+                //println!("copy group:{:?}, reg:{:?}, back:{:?}", REGISTER_GROUP_DATA, tap.offset, tap.back);
+            };
+        } else {
+            bail!("no group found for {}", tap.group);
+        }
+    }
+
+    //sanity check for recursion taps
+    assert_eq!(accum_matrix_with_back_col.len(), 16);
+    assert_eq!(ctrl_matrix_with_back_col.len(), 23);
+    assert_eq!(data_matrix_with_back_col.len(), 604);
+
+    // Concatenate ctrl, data, and accum into a single row-major vector
+    let ctrl_columns = ctrl_matrix_with_back_col.len();
+    let data_columns = data_matrix_with_back_col.len();
+    let accum_columns = accum_matrix_with_back_col.len();
+
+    let total_columns = ctrl_columns + data_columns + accum_columns;
+
+    let mut p3_trace_matrix = Vec::with_capacity(total_columns * rows_size);
+
+    for i in 0..rows_size {
+        for accum_column in accum_matrix_with_back_col.iter() {
+            p3_trace_matrix.push(accum_column[i].as_u32());
+        }
+        for ctrl_column in ctrl_matrix_with_back_col.iter() {
+            p3_trace_matrix.push(ctrl_column[i].as_u32());
+        }
+        for data_column in data_matrix_with_back_col.iter() {
+            p3_trace_matrix.push(data_column[i].as_u32());
+        }
+    }
+
+    Ok(p3_trace_matrix)
+}
+
+pub fn write_file (
+    content: &[u32],
+    file_name: &str,
+) -> Result<()>{
+    let mut file = File::create(file_name)?;
+
+    for elem in content.iter() {
+        let _ = file.write_u32_le(*elem)?;
+    }
+
+    Ok(())
+}
+
+pub fn read_file (
+    file_name: &str,
+) -> Result<Vec<u32>>{
+    let file = File::open(file_name)?;
+    let mut reader = BufReader::new(file);
+    let mut buffer = Vec::new();
+    let mut elem_bytes = [0u8; 4];
+    while reader.read_exact(&mut elem_bytes).is_ok() {
+        let num = u32::from_le_bytes(elem_bytes);
+        buffer.push(num);
+    }
+    Ok(buffer)
 }

@@ -18,3 +18,5 @@ tools/smoke-test/Cargo.lock
 compile_commands.json
 .vercel
 node_modules
+recursion.log
+risc0/zkvm/trace_matrix.bin

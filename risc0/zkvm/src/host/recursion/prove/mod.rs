@@ -243,6 +243,41 @@ pub fn identity_p254(a: &SuccinctReceipt<ReceiptClaim>) -> Result<SuccinctReceip
     })
 }
 
+/// Prove the verification of a recursion receipt using the Poseidon2 hash function for FRI.
+///
+/// Run the identity program
+pub fn identity_babybear(
+    a: &SuccinctReceipt<ReceiptClaim>,
+) -> Result<SuccinctReceipt<ReceiptClaim>> {
+    let opts = ProverOpts::succinct().with_hashfn("poseidon2".to_string());
+
+    let mut prover = Prover::new_identity(a, opts.clone())?;
+    let receipt = prover.prover.run()?;
+    let mut out_stream = VecDeque::<u32>::new();
+    out_stream.extend(receipt.output.iter());
+    let claim = MaybePruned::Value(ReceiptClaim::decode(&mut out_stream)?).merge(&a.claim)?;
+
+    // Include an inclusion proof for control_id to allow verification against a root.
+    let hashfn = opts.hash_suite()?.hashfn;
+    let control_inclusion_proof = MerkleGroup::new(opts.control_ids.clone())?
+        .get_proof(&prover.control_id, hashfn.as_ref())?;
+    let control_root = control_inclusion_proof.root(&prover.control_id, hashfn.as_ref());
+    let params = SuccinctReceiptVerifierParameters {
+        control_root,
+        inner_control_root: Some(a.control_root()?),
+        proof_system_info: PROOF_SYSTEM_INFO,
+        circuit_info: CircuitImpl::CIRCUIT_INFO,
+    };
+    Ok(SuccinctReceipt {
+        seal: receipt.seal,
+        hashfn: opts.hashfn,
+        control_id: prover.control_id,
+        control_inclusion_proof,
+        claim,
+        verifier_parameters: params.digest(),
+    })
+}
+
 /// Prove the specified program identified by the `control_id` using the specified `input`.
 pub fn prove_zkr(control_id: &Digest, input: &[u8]) -> Result<SuccinctReceipt<Unknown>> {
     let zkr = get_registered_zkr(control_id)?;
