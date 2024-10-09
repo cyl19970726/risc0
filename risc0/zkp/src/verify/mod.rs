@@ -21,6 +21,8 @@ mod read_iop;
 use alloc::{vec, vec::Vec};
 
 use core::{cell::RefCell, fmt, iter::zip};
+
+#[cfg(feature = "std")]
 use std::{fs::File, io::Write};
 
 
@@ -380,7 +382,14 @@ where
             mix_u32_vec.extend(mix_elem.to_u32_words());
         }
 
-        let _ = write_file(&eval_u32_vec, "eval_u32_vec.bin");
+        #[cfg(feature = "std")]
+        let _ = write_file(&eval_u32_vec, "eval_u32.bin");
+
+        #[cfg(feature = "std")]
+        let _ = write_file(&out_u32_vec, "out_u32.bin");
+
+        #[cfg(feature = "std")]
+        let _ = write_file(&mix_u32_vec, "mix_u32.bin");
 
 
         #[cfg(not(target_os = "zkvm"))]
@@ -528,6 +537,7 @@ where
     Verifier::<F, C>::new(circuit, suite).verify(seal, check_code)
 }
 
+#[cfg(feature = "std")]
 pub fn write_file(content: &[u32], file_name: &str) -> Result<()> {
     let mut file = File::create(file_name).unwrap();
 
