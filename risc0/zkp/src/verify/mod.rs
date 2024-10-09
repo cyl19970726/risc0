@@ -19,8 +19,12 @@ mod merkle;
 mod read_iop;
 
 use alloc::{vec, vec::Vec};
-use core::{cell::RefCell, fmt, iter::zip};
 
+use core::{cell::RefCell, fmt, iter::zip};
+use std::{fs::File, io::Write};
+
+
+use anyhow::Result;
 pub(crate) use merkle::MerkleTreeVerifier;
 pub use read_iop::ReadIOP;
 use risc0_core::field::{Elem, ExtElem, Field, RootsOfUnity};
@@ -360,6 +364,25 @@ where
             .poly_ext(&poly_mix, &eval_u, &[self.out.unwrap(), &self.mix])
             .tot;
 
+        //record out and mix
+        let mut eval_u32_vec = vec![];
+        for eval in eval_u.iter() {
+            eval_u32_vec.extend(eval.to_u32_words());
+        }
+
+        let mut out_u32_vec = vec![];
+        for out_elem in self.out.unwrap().iter() {
+            out_u32_vec.extend(out_elem.to_u32_words());
+        }
+
+        let mut mix_u32_vec = vec![];
+        for mix_elem in self.mix.iter() {
+            mix_u32_vec.extend(mix_elem.to_u32_words());
+        }
+
+        let _ = write_file(&eval_u32_vec, "eval_u32_vec.bin");
+
+
         #[cfg(not(target_os = "zkvm"))]
         tracing::debug!("< compute_polynomial");
         // tracing::debug!("Result = {result:?}");
@@ -503,4 +526,14 @@ where
     CheckCode: Fn(u32, &Digest) -> Result<(), VerificationError>,
 {
     Verifier::<F, C>::new(circuit, suite).verify(seal, check_code)
+}
+
+pub fn write_file(content: &[u32], file_name: &str) -> Result<()> {
+    let mut file = File::create(file_name).unwrap();
+
+    for elem in content.iter() {
+        file.write_all(&elem.to_le_bytes()).unwrap();
+    }
+
+    Ok(())
 }
